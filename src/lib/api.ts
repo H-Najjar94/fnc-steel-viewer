@@ -39,3 +39,23 @@ export async function readFileBytes(path: string): Promise<Uint8Array> {
 export async function readExcel(path: string): Promise<Workbook> {
   return invoke<Workbook>("read_excel", { path });
 }
+
+export interface DxfRef {
+  mark: string;
+  path: string;
+}
+
+/** List every .dxf cut file in a project, keyed by filename mark. */
+export async function listDxf(root: string, excludes: string[] = []): Promise<DxfRef[]> {
+  return invoke<DxfRef[]>("list_dxf", { root, excludes });
+}
+
+/** Persist extracted components next to the project; returns the written path. */
+export async function saveComponents(root: string, content: string): Promise<string> {
+  return invoke<string>("save_components", { root, content });
+}
+
+/** Load previously-saved components JSON, or null if none. */
+export async function loadComponents(root: string): Promise<string | null> {
+  return invoke<string | null>("load_components", { root });
+}

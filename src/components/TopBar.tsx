@@ -103,6 +103,11 @@ export default function TopBar() {
         <Tab active={mainView === "catalog"} onClick={() => setMainView("catalog")}>
           Catalog
         </Tab>
+        {project.ifc_path && (
+          <Tab active={mainView === "components"} onClick={() => setMainView("components")}>
+            Components
+          </Tab>
+        )}
         <Tab active={mainView === "reports"} onClick={() => setMainView("reports")}>
           Reports ({project.reports.length})
         </Tab>

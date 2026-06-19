@@ -29,6 +29,15 @@ export interface AssemblyPartMarked extends AssemblyPart {
   mark: string; // the part position/mark (e.g. "PL323") read from the IFC Reference
 }
 
+export interface IfcComponent {
+  mark: string;
+  name: string;
+  profile: string;
+  category: Category;
+  count: number; // how many instances in the building
+  assemblyMark: string; // a parent assembly it belongs to
+}
+
 export interface IfcModel {
   wholeGroup: THREE.Group;
   elements: number;
@@ -46,6 +55,9 @@ export interface IfcModel {
   getAssemblyPartMarks: (mark: string) => Promise<AssemblyPartMarked[]>;
   /** Resolve a clicked element's part mark + parent assembly mark. */
   pick: (expressID: number) => Promise<{ partMark: string; assemblyMark: string }>;
+  /** Extract every unique component (plate/beam/column/member) with its mark.
+   *  Heavy (reads marks for all part instances); cached after the first call. */
+  getComponents: (onProgress?: (done: number, total: number) => void) => Promise<IfcComponent[]>;
 }
 
 interface Bucket {
@@ -58,11 +70,15 @@ interface Bucket {
 
 const cache = new Map<string, Promise<IfcModel>>();
 
-export function loadIfcModel(path: string): Promise<IfcModel> {
+const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+export function loadIfcModel(path: string, onProgress?: (f: number) => void): Promise<IfcModel> {
   let p = cache.get(path);
   if (!p) {
-    p = build(path);
+    p = build(path, onProgress);
     cache.set(path, p);
+  } else {
+    onProgress?.(1);
   }
   return p;
 }
@@ -210,7 +226,7 @@ function orient(group: THREE.Group, rot: THREE.Euler): THREE.Group {
   return group;
 }
 
-async function build(path: string): Promise<IfcModel> {
+async function build(path: string, onProgress?: (f: number) => void): Promise<IfcModel> {
   const api = new IfcAPI();
   api.SetWasmPath("/", true);
   await api.Init();
@@ -222,6 +238,16 @@ async function build(path: string): Promise<IfcModel> {
   const vp = new THREE.Vector3();
   const vn = new THREE.Vector3();
 
+  let total = 0;
+  for (const t of [IFCBEAM, IFCPLATE, IFCCOLUMN, IFCMEMBER]) {
+    try {
+      total += api.GetLineIDsWithType(modelID, t).size();
+    } catch {
+      /* skip */
+    }
+  }
+  total = Math.max(total, 1);
+
   const buckets = new Map<Category, Bucket>();
   let elements = 0;
   api.StreamAllMeshes(modelID, (mesh: any) => {
@@ -229,7 +255,9 @@ async function build(path: string): Promise<IfcModel> {
     if (code === IFCMECHANICALFASTENER) return; // skip bolts
     elements++;
     addPlaced(api, modelID, mesh.geometries, categoryOf(code), mesh.expressID, buckets, m, nm, vp, vn);
+    if (onProgress && elements % 300 === 0) onProgress(Math.min(0.85, (elements / total) * 0.85));
   });
+  onProgress?.(0.9);
   const wholeGroup = bucketsToGroup(buckets, true); // edges kept but drawn faint at building scale
   const upRotation = computeUpRotation(wholeGroup);
   orient(wholeGroup, upRotation);
@@ -373,6 +401,62 @@ async function build(path: string): Promise<IfcModel> {
     return { partMark, assemblyMark: partToAssembly.get(expressID) ?? "" };
   };
 
+  // Extract every unique component (plate/beam/column/member) with its mark.
+  let componentsCache: IfcComponent[] | null = null;
+  const getComponents = async (
+    onProgress?: (done: number, total: number) => void
+  ): Promise<IfcComponent[]> => {
+    if (componentsCache) return componentsCache;
+    const ids: number[] = [];
+    for (const t of [IFCBEAM, IFCPLATE, IFCCOLUMN, IFCMEMBER]) {
+      const v = api.GetLineIDsWithType(modelID, t);
+      for (let i = 0; i < v.size(); i++) ids.push(v.get(i));
+    }
+    const byMark = new Map<string, IfcComponent>();
+    let done = 0;
+    const chunkSize = 20;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      let name = "";
+      let profile = "";
+      const category = categoryOf(api.GetLineType(modelID, id));
+      try {
+        const ln = api.GetLine(modelID, id);
+        name = ln?.Name?.value ?? "";
+        profile = ln?.ObjectType?.value ?? "";
+      } catch {
+        /* skip */
+      }
+      const { partMark } = await readMarks(api, modelID, id);
+      const key = partMark || `${category}|${profile}|${name}|#${id}`;
+      const ex = byMark.get(key);
+      if (ex) ex.count += 1;
+      else
+        byMark.set(key, {
+          mark: partMark,
+          name,
+          profile,
+          category,
+          count: 1,
+          assemblyMark: partToAssembly.get(id) ?? "",
+        });
+      done += 1;
+      if (onProgress && done % 250 === 0) onProgress(done, ids.length);
+      if (i > 0 && i % chunkSize === 0) {
+        onProgress?.(done, ids.length);
+        await yieldToBrowser();
+      }
+    }
+    onProgress?.(ids.length, ids.length);
+    componentsCache = [...byMark.values()].sort(
+      (a, b) =>
+        CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category) ||
+        a.profile.localeCompare(b.profile) ||
+        a.mark.localeCompare(b.mark)
+    );
+    return componentsCache;
+  };
+
   const present = new Set<Category>();
   for (const b of buckets.values()) present.add(b.category);
   const categories = CATEGORY_ORDER.filter((c) => present.has(c));
@@ -401,6 +485,7 @@ async function build(path: string): Promise<IfcModel> {
     assemblyParts.set(mark.toLowerCase(), list);
   }
 
+  onProgress?.(1);
   return {
     wholeGroup,
     elements,
@@ -412,5 +497,6 @@ async function build(path: string): Promise<IfcModel> {
     getAssemblyHighlight,
     getAssemblyPartMarks,
     pick,
+    getComponents,
   };
 }

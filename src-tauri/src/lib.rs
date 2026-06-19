@@ -82,6 +82,61 @@ fn read_excel(path: String) -> Result<excel::Workbook, String> {
     excel::read_workbook(&path)
 }
 
+#[derive(serde::Serialize)]
+struct DxfRef {
+    mark: String,
+    path: String,
+}
+
+/// List all .dxf files in a project, keyed by their filename mark (for linking
+/// extracted components to their cut files).
+#[tauri::command]
+fn list_dxf(root: String, excludes: Option<Vec<String>>) -> Vec<DxfRef> {
+    let ex: Vec<String> = excludes
+        .unwrap_or_default()
+        .iter()
+        .map(|e| e.replace('\\', "/").to_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect();
+    let mut out = Vec::new();
+    let walker = walkdir::WalkDir::new(&root).into_iter().filter_entry(|e| {
+        if ex.is_empty() {
+            return true;
+        }
+        let p = e.path().to_string_lossy().replace('\\', "/").to_lowercase();
+        !ex.iter().any(|x| p.starts_with(x))
+    });
+    for entry in walker.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dxf")) {
+            let mark = p
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            out.push(DxfRef {
+                mark,
+                path: p.to_string_lossy().replace('\\', "/"),
+            });
+        }
+    }
+    out
+}
+
+/// Persist extracted components alongside the project so they survive restarts.
+#[tauri::command]
+fn save_components(root: String, content: String) -> Result<String, String> {
+    let path = PathBuf::from(&root).join("_fnc_components.json");
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().replace('\\', "/"))
+}
+
+/// Load previously-saved components, if any.
+#[tauri::command]
+fn load_components(root: String) -> Option<String> {
+    let path = PathBuf::from(&root).join("_fnc_components.json");
+    std::fs::read_to_string(&path).ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -93,7 +148,10 @@ pub fn run() {
             get_part_geometry,
             read_text_file,
             read_file_bytes,
-            read_excel
+            read_excel,
+            list_dxf,
+            save_components,
+            load_components
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

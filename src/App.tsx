@@ -8,6 +8,7 @@ import Catalog from "./components/Catalog";
 import DetailPanel from "./components/DetailPanel";
 import ViewerPanel from "./components/ViewerPanel";
 import Reports from "./components/Reports";
+import Components from "./components/Components";
 
 export default function App() {
   const project = useStore((s) => s.project);
@@ -35,6 +36,11 @@ export default function App() {
           <>
             <Sidebar />
             <Reports />
+          </>
+        ) : mainView === "components" ? (
+          <>
+            <Sidebar />
+            <Components />
           </>
         ) : viewerMaximized ? (
           <ViewerPanel />

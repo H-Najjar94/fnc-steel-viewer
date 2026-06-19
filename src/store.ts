@@ -7,7 +7,7 @@ import { findProject } from "./config";
 export type { IfcAssemblyPart };
 
 export type ViewerTab = "3d" | "cad" | "pdf" | "cnc" | "data";
-export type MainView = "catalog" | "reports";
+export type MainView = "catalog" | "reports" | "components";
 
 const RECENTS_KEY = "fnc.recentProjects";
 
