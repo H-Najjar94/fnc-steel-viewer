@@ -1,0 +1,78 @@
+Tekla structures
+A.A
+ISSUED FOR FABRICATION
+12-06-2026
+F0
+H.H
+DATE
+DSN
+CHK
+DRN
+DESCRIPTION
+REV.
+DRAWING TITLE:
+CHECKED BY
+DATE
+SCALE
+SHEET NO.
+CONTRACTOR:
+PROJECT NAME:
+A.A
+A.A
+SCHOOL PROJECT
+--
+STEEL STRUCTURE
+3D_MODEL
+E01
+-------------
+1"
+X1
+X2
+X3
+8'
+12
+K
+L
+M
+N
+P
+Q
+R
+R'
+S'
+1"
+1'
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+S
+T3
+T2
+T1
+T
+V3
+V2
+V1
+V
+W
+3D MODEL
+A
+B
+C
+D
+E
+F
+G'
+G
+H
+J
+PDF created with pdfFactory Pro trial version pdffactory.com
