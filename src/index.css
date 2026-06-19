@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+/* FNC brand theme */
+@theme {
+  --color-fnc-red: #c0202a;
+  --color-fnc-red-dark: #9a1820;
+  --color-fnc-navy: #1b2a4a;
+  --color-fnc-navy-light: #2c4068;
+  --color-fnc-steel: #5a6b85;
+  --color-fnc-bg: #0f1626;
+  --color-fnc-panel: #18233a;
+  --color-fnc-panel-2: #1f2d49;
+  --color-fnc-border: #2c3a5a;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: var(--color-fnc-bg);
+  color: #e6ebf5;
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  overflow: hidden;
+}
+
+/* Thin steel scrollbars */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-fnc-border);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-fnc-steel);
+}
