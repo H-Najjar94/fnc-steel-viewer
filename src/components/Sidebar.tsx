@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useStore } from "../store";
 import { num } from "../lib/format";
+import { isPurlinAssembly } from "../lib/classify";
 
 export default function Sidebar() {
   const { project, categoryFilter, setCategoryFilter, thicknessFilter, setThicknessFilter } =
@@ -23,6 +24,7 @@ export default function Sidebar() {
   const s = project.stats;
   const plates = s.by_category["Plate"] || 0;
   const profiles = s.by_category["Profile"] || 0;
+  const purlins = project.assemblies.reduce((n, a) => n + (isPurlinAssembly(a) ? 1 : 0), 0);
 
   const pick = (c: string | null) => {
     setCategoryFilter(c);
@@ -34,6 +36,9 @@ export default function Sidebar() {
       <Section>Browse</Section>
       <Item label="All items" count={s.assemblies + s.parts} active={categoryFilter === null} onClick={() => pick(null)} />
       <Item label="Assemblies" count={s.assemblies} active={categoryFilter === "Assembly"} onClick={() => pick("Assembly")} />
+      {purlins > 0 && (
+        <Item label="Purlins" count={purlins} active={categoryFilter === "Purlin"} onClick={() => pick("Purlin")} />
+      )}
       <Item label="Profiles" count={profiles} active={categoryFilter === "Profile"} onClick={() => pick("Profile")} />
       <Item label="Plates" count={plates} active={categoryFilter === "Plate"} onClick={() => pick("Plate")} />
 

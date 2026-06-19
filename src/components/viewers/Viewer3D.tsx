@@ -32,21 +32,21 @@ export default function Viewer3D({
   isAssembly: boolean;
   assemblyMark?: string;
 }) {
-  // Assemblies: only an IFC building model can place them in 3D.
   if (isAssembly) {
-    if (ifcPath)
+    if (ifcPath) {
       return (
-        <Suspense fallback={<Center>Loading 3D model…</Center>}>
+        <Suspense fallback={<Center>Loading 3D model...</Center>}>
           <IfcViewer path={ifcPath} assemblyMark={assemblyMark} />
         </Suspense>
       );
+    }
     return (
       <Center>
         <div className="max-w-sm text-center">
           <p className="mb-2 text-white">No assembled 3D model available.</p>
           <p className="text-sm text-fnc-steel">
             A full building view needs an <b>IFC</b> export dropped into the project folder.
-            Meanwhile, open this assembly's <b>Drawing</b> tab, or select one of its single
+            Meanwhile, open this assembly&apos;s <b>Drawing</b> tab, or select one of its single
             parts to see it in 3D.
           </p>
         </div>
@@ -54,22 +54,18 @@ export default function Viewer3D({
     );
   }
 
-  // DSTV reconstruction when the part has a CNC file.
   if (part?.nc1_path) return <PartScene part={part} />;
 
-  // Per-part DXF cut file: extrude the outline — fast, no IFC, no extraction.
   if (part?.dxf_path)
     return (
-      <Suspense fallback={<Center>Loading 3D…</Center>}>
+      <Suspense fallback={<Center>Loading 3D...</Center>}>
         <DxfPartViewer part={part} />
       </Suspense>
     );
 
-  // Otherwise, if the project has an IFC, show this part isolated from the model
-  // (parts that exist only in the IFC — e.g. profiles with no DXF/.nc1).
   if (part && ifcPath)
     return (
-      <Suspense fallback={<Center>Loading 3D model…</Center>}>
+      <Suspense fallback={<Center>Loading 3D model...</Center>}>
         <IfcPartViewer path={ifcPath} partMark={part.mark} name={part.name} profile={part.profile} />
       </Suspense>
     );
@@ -96,13 +92,14 @@ function PartScene({ part }: { part: Part }) {
   }, [part.nc1_path]);
 
   const geometry = useMemo(() => (geo ? buildGeometry(geo) : null), [geo]);
-  const holeSize = useMemo(() => {
-    if (!geo) return 0.02;
-    return Math.max(Math.min(Math.max(geo.length_mm, geo.width_mm) * 0.000012, 0.08), 0.01);
-  }, [geo]);
+  const yOffset = useMemo(() => {
+    if (!geometry) return 0;
+    geometry.computeBoundingBox();
+    return -(geometry.boundingBox?.min.y ?? 0);
+  }, [geometry]);
 
   if (error) return <Center>{error}</Center>;
-  if (!geometry) return <Center>Building 3D…</Center>;
+  if (!geometry) return <Center>Building 3D...</Center>;
 
   return (
     <div className="relative h-full w-full">
@@ -116,14 +113,13 @@ function PartScene({ part }: { part: Part }) {
         <hemisphereLight intensity={0.6} color="#ffffff" groundColor="#9099a8" />
         <directionalLight position={[5, 8, 5]} intensity={1.0} />
         <directionalLight position={[-5, 3, -4]} intensity={0.35} />
-        {/* In-scene environment so the metal reads as steel, not black. */}
         <Environment resolution={128} frames={1}>
           <Lightformer intensity={1.6} position={[0, 5, 0]} scale={[8, 8, 1]} />
           <Lightformer intensity={1.0} position={[5, 2, 5]} scale={[4, 4, 1]} />
           <Lightformer intensity={0.8} position={[-5, 2, -4]} scale={[4, 4, 1]} />
         </Environment>
         <Bounds key={resetKey} fit clip observe margin={1.2}>
-          <group>
+          <group position={[0, yOffset, 0]}>
             <mesh geometry={geometry}>
               <meshStandardMaterial
                 color={part.category === "Plate" ? "#9aa7bd" : "#c0202a"}
@@ -133,7 +129,7 @@ function PartScene({ part }: { part: Part }) {
                 side={THREE.DoubleSide}
               />
             </mesh>
-            {geo && geo.holes.length > 0 && <HoleMarkers geo={geo} size={holeSize} />}
+            {geo && geo.profile_type !== "plate" && <HoleRims geo={geo} />}
           </group>
         </Bounds>
         <Grid
@@ -162,7 +158,6 @@ function PartScene({ part }: { part: Part }) {
         </EffectComposer>
       </Canvas>
 
-      {/* tools */}
       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
         <div className="pointer-events-auto rounded-lg bg-fnc-panel/90 px-3 py-2 text-xs backdrop-blur">
           <div className="font-semibold text-white">{geo!.profile}</div>
@@ -172,7 +167,13 @@ function PartScene({ part }: { part: Part }) {
               ? `${mm(geo!.height_mm)} × ${mm(geo!.thickness_mm)}`
               : `H ${mm(geo!.height_mm)}`}
           </div>
-          <div className="text-fnc-steel">{kg(part.weight_kg)} · {geo!.holes.length} holes</div>
+          <div className="text-fnc-steel">
+            {kg(part.weight_kg)} · {geo!.holes.length} holes
+          </div>
+          <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-fnc-steel/80">
+            <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-cyan-200">Ø11 flange</span>
+            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">Ø24 web</span>
+          </div>
         </div>
         <div className="pointer-events-auto flex gap-1">
           <ToolBtn onClick={() => setWire((w) => !w)} active={wire}>
@@ -210,29 +211,53 @@ function ToolBtn({
 }
 
 function Center({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex h-full items-center justify-center p-6 text-sm text-fnc-steel">
-      {children}
-    </div>
-  );
+  return <div className="flex h-full items-center justify-center p-6 text-sm text-fnc-steel">{children}</div>;
 }
 
-function HoleMarkers({ geo, size }: { geo: PartGeometry; size: number }) {
+function HoleRims({ geo }: { geo: PartGeometry }) {
   const S = 0.001;
+  const halfWidth = geo.width_mm / 2;
+  const halfHeight = geo.height_mm / 2;
+  const halfLength = geo.length_mm / 2;
+  const flangeSurfaceOffset = Math.max(geo.flange_t_mm, 1) * 0.55;
+  const webSurfaceOffset = Math.max(geo.web_t_mm, 1) * 0.55;
+
   return (
-    <>
+    <group>
       {geo.holes.map((h, i) => {
-        const x = (h.x - geo.width_mm / 2) * S;
-        const y = (geo.length_mm / 2 - h.y) * S;
-        const z = Math.max(geo.height_mm, 1) * S * 0.5 + size * 0.1;
-        const r = Math.max((h.d / 2) * S, size * 0.65);
+        const isWeb = h.d >= 20;
+        const r = (h.d / 2) * S;
+        const tube = Math.max(r * 0.12, 0.0012);
+        if (isWeb) {
+          return (
+            <mesh
+              key={`web-${i}`}
+              position={[webSurfaceOffset * S, (h.x - halfWidth) * S, (h.y - halfLength) * S]}
+              rotation={[0, Math.PI / 2, 0]}
+              renderOrder={20}
+            >
+              <torusGeometry args={[r, tube, 8, 32]} />
+              <meshBasicMaterial color="#f8fafc" depthWrite={false} />
+            </mesh>
+          );
+        }
+
+        const mirroredX = Math.min(h.x, geo.width_mm - h.x);
+        const y = h.x <= halfWidth
+          ? (halfHeight - flangeSurfaceOffset) * S
+          : (-halfHeight + flangeSurfaceOffset) * S;
         return (
-          <mesh key={`${i}-${h.x}-${h.y}`} position={[x, y, z]} renderOrder={10}>
-            <circleGeometry args={[r, 20]} />
-            <meshBasicMaterial color="#d8dee8" depthWrite={false} depthTest />
+          <mesh
+            key={`flange-${i}`}
+            position={[(mirroredX - halfWidth) * S, y, (h.y - halfLength) * S]}
+            rotation={[Math.PI / 2, 0, 0]}
+            renderOrder={20}
+          >
+            <torusGeometry args={[r, tube, 8, 32]} />
+            <meshBasicMaterial color="#f8fafc" depthWrite={false} />
           </mesh>
         );
       })}
-    </>
+    </group>
   );
 }

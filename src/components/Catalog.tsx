@@ -2,6 +2,7 @@ import { useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useStore } from "../store";
 import { kg } from "../lib/format";
+import { isPurlinAssembly } from "../lib/classify";
 import type { Selection } from "../types";
 
 interface Row {
@@ -24,11 +25,14 @@ export default function Catalog() {
     const q = search.trim().toLowerCase();
     const out: Row[] = [];
 
-    const wantAssemblies = categoryFilter === null || categoryFilter === "Assembly";
-    const wantParts = categoryFilter !== "Assembly";
+    const wantAssemblies =
+      categoryFilter === null || categoryFilter === "Assembly" || categoryFilter === "Purlin";
+    const wantParts =
+      categoryFilter !== "Assembly" && categoryFilter !== "Purlin";
 
     if (wantAssemblies) {
       for (const a of project.assemblies) {
+        if (categoryFilter === "Purlin" && !isPurlinAssembly(a)) continue;
         const count = instanceCounts.get(a.mark.toLowerCase()) ?? 1;
         const nParts = a.part_marks.length || (ifcAssemblyParts.get(a.mark.toLowerCase())?.length ?? 0);
         out.push({

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { Brush, Evaluator, SUBTRACTION } from "three-bvh-csg";
 import type { PartGeometry } from "../types";
 
 const S = 0.001; // mm -> meters
@@ -12,6 +13,7 @@ export function buildGeometry(geo: PartGeometry): THREE.BufferGeometry {
     g = buildPlate(geo);
   } else {
     g = buildProfile(geo);
+    if (geo.holes.length > 0) g = cutProfileHoles(g, geo);
   }
   g.computeVertexNormals();
   g.center();
@@ -46,10 +48,50 @@ function buildProfile(geo: PartGeometry): THREE.BufferGeometry {
     return new THREE.BoxGeometry(B, H, len);
   }
   const g = new THREE.ExtrudeGeometry(shape, { depth: len, bevelEnabled: false });
-  // Stand profile members upright in the viewer so long members read as
-  // columns/beams instead of lying flat on their side.
-  g.rotateX(-Math.PI / 2);
   return g;
+}
+
+function cutProfileHoles(base: THREE.BufferGeometry, geo: PartGeometry): THREE.BufferGeometry {
+  const evaluator = new Evaluator();
+  evaluator.useGroups = false;
+
+  let result = brushFromGeometry(base);
+  const H = Math.max(geo.height_mm, 1) * S;
+  const tf = Math.max(geo.flange_t_mm, 1) * S;
+  const tw = Math.max(geo.web_t_mm, 1) * S;
+
+  for (const h of geo.holes) {
+    const radius = Math.max((h.d / 2) * S, 0.001);
+    const isWeb = h.d >= 20;
+    const cutGeo = isWeb
+      ? new THREE.CylinderGeometry(radius, radius, tw * 1.4, 24, 1, false)
+      : new THREE.CylinderGeometry(radius, radius, tf * 1.4, 24, 1, false);
+    const cut = brushFromGeometry(cutGeo);
+    const z = h.y * S;
+    if (isWeb) {
+      cut.rotation.z = Math.PI / 2;
+      cut.position.set(0, (h.x - geo.width_mm / 2) * S, z);
+    } else {
+      const flangeY = h.x <= geo.width_mm / 2 ? (H / 2) - (tf / 2) : (-H / 2) + (tf / 2);
+      const mirroredX = Math.min(h.x, geo.width_mm - h.x);
+      cut.position.set((mirroredX - geo.width_mm / 2) * S, flangeY, z);
+    }
+    cut.updateMatrixWorld(true);
+    result = evaluator.evaluate(result, cut, SUBTRACTION);
+  }
+
+  const out = result.geometry.clone();
+  result.geometry.dispose();
+  return out;
+}
+
+function brushFromGeometry(geometry: THREE.BufferGeometry): Brush {
+  geometry = geometry.clone();
+  geometry.computeVertexNormals();
+  const material = new THREE.MeshStandardMaterial();
+  const brush = new Brush(geometry, material);
+  brush.updateMatrixWorld(true);
+  return brush;
 }
 
 function sectionShape(
