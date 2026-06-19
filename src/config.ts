@@ -8,7 +8,7 @@ export interface ProjectDef {
 }
 
 const ELNAGAR_ROOT = "C:/Users/user/Documents/taff/ELNAGAR-IFF-REV00/ELNAGAR-IFF-REV00";
-const KHASHROM_ROOT = "C:/Users/user/Documents/taff/khashrom";
+const KHASHROM_ROOT = "C:/Users/user/Documents/taff/fnc-viewer/projects/khashrom";
 
 // Built-in projects shipped with the app. Each is scanned in isolation.
 export const BUILTIN_PROJECTS: ProjectDef[] = [
