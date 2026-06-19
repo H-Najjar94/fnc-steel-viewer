@@ -1,10 +1,81 @@
 import { create } from "zustand";
 import type { ProjectIndex, Part, Assembly, Selection } from "./types";
-import type { AssemblyPart as IfcAssemblyPart } from "./lib/ifc";
-import { scanProject } from "./lib/api";
+import type { AssemblyPart as IfcAssemblyPart, IfcComponent } from "./lib/ifc";
+import { scanProject, loadComponents } from "./lib/api";
 import { findProject } from "./config";
 
 export type { IfcAssemblyPart };
+
+export type DxfMap = Record<string, string>; // mark(lc) -> dxf path
+
+// Turn an IFC-extracted component into a catalog Part so it shows up in the
+// sidebar counts, the catalog list, and links from the assembly parts panel.
+function componentToPart(c: IfcComponent, dxf?: string): Part {
+  const isPlate = c.category === "Plate";
+  const m = /PL\s*(\d+)/i.exec(c.profile || "");
+  return {
+    mark: c.mark,
+    name: c.name || c.category,
+    category: isPlate ? "Plate" : "Profile",
+    profile: c.profile,
+    profile_type: "",
+    material: "",
+    length_mm: 0,
+    width_mm: 0,
+    height_mm: 0,
+    flange_t_mm: 0,
+    web_t_mm: 0,
+    radius_mm: 0,
+    weight_per_m: 0,
+    weight_kg: 0,
+    quantity: c.count,
+    thickness_group: isPlate && m ? `PL${m[1]}` : null,
+    parent_assembly: c.assemblyMark,
+    nc1_path: null,
+    dxf_path: dxf ?? null,
+    pdf_path: null,
+  };
+}
+
+// Merge components into a project (additively, deduped by mark). Returns a new
+// project with refreshed parts + stats, or null if nothing new was added.
+function withComponents(
+  project: ProjectIndex,
+  components: IfcComponent[],
+  dxf?: DxfMap
+): ProjectIndex | null {
+  const byMark = new Map(project.parts.map((p) => [p.mark.toLowerCase(), p] as const));
+  const added: Part[] = [];
+  let enriched = false;
+  for (const c of components) {
+    const mk = (c.mark || "").toLowerCase();
+    if (!mk) continue;
+    const existingPart = byMark.get(mk);
+    if (existingPart) {
+      // Part already in the catalog (e.g. from a DXF) — fill the parent assembly
+      // relation from the IFC if it's missing.
+      if (!existingPart.parent_assembly && c.assemblyMark) {
+        existingPart.parent_assembly = c.assemblyMark;
+        enriched = true;
+      }
+      continue;
+    }
+    const p = componentToPart(c, dxf?.[mk]);
+    byMark.set(mk, p);
+    added.push(p);
+  }
+  if (!added.length && !enriched) return null;
+
+  const parts = [...project.parts, ...added];
+  const by_category = { ...project.stats.by_category };
+  let part_instances = project.stats.part_instances;
+  for (const p of added) {
+    by_category[p.category] = (by_category[p.category] || 0) + 1;
+    part_instances += Math.max(p.quantity, 1);
+  }
+  const stats = { ...project.stats, parts: parts.length, part_instances, by_category };
+  return { ...project, parts, stats };
+}
 
 export type ViewerTab = "3d" | "cad" | "pdf" | "cnc" | "data";
 export type MainView = "catalog" | "reports" | "components";
@@ -33,6 +104,7 @@ interface AppState {
   assembliesByMark: Map<string, Assembly>;
   instanceCounts: Map<string, number>; // mark -> identical-assembly count (from IFC)
   ifcAssemblyParts: Map<string, IfcAssemblyPart[]>; // mark(lc) -> parts from IFC
+  ifcPartIndex: Map<string, number[]>; // part mark(lc) -> IFC expressIDs (from saved components)
   setIfcData: (counts: Map<string, number>, parts: Map<string, IfcAssemblyPart[]>) => void;
 
   // UI
@@ -47,6 +119,7 @@ interface AppState {
   thicknessFilter: string | null; // "PL10" | null
 
   openProject: (root: string, useCache?: boolean) => Promise<void>;
+  applyComponents: (components: IfcComponent[], dxf?: DxfMap, index?: Map<string, number[]>) => void;
   reload: () => Promise<void>;
   closeProject: () => void;
   select: (sel: Selection | null) => void;
@@ -74,6 +147,7 @@ export const useStore = create<AppState>((set, get) => ({
   assembliesByMark: new Map(),
   instanceCounts: new Map(),
   ifcAssemblyParts: new Map(),
+  ifcPartIndex: new Map(),
   setIfcData: (instanceCounts, ifcAssemblyParts) => set({ instanceCounts, ifcAssemblyParts }),
 
   mainView: "catalog",
@@ -89,7 +163,26 @@ export const useStore = create<AppState>((set, get) => ({
   openProject: async (root, useCache = true) => {
     set({ loading: true, error: null });
     try {
-      const project = await scanProject(root, useCache, findProject(root)?.exclude ?? []);
+      let project = await scanProject(root, useCache, findProject(root)?.exclude ?? []);
+      // Fold in previously-saved IFC components (if any) so the sidebar counts,
+      // catalog, and assembly parts panel reflect them right away on launch.
+      let ifcPartIndex = new Map<string, number[]>();
+      try {
+        const txt = await loadComponents(root);
+        if (txt) {
+          const doc = JSON.parse(txt) as {
+            components?: IfcComponent[];
+            dxf?: DxfMap;
+            index?: Record<string, number[]>;
+          };
+          const merged = withComponents(project, doc.components ?? [], doc.dxf);
+          if (merged) project = merged;
+          // Saved part-mark -> expressID index: lets part 3D skip the scan.
+          if (doc.index) ifcPartIndex = new Map(Object.entries(doc.index));
+        }
+      } catch {
+        /* no saved components / malformed — ignore */
+      }
       const partsByMark = new Map<string, Part>();
       project.parts.forEach((p) => partsByMark.set(p.mark.toLowerCase(), p));
       const assembliesByMark = new Map<string, Assembly>();
@@ -122,6 +215,7 @@ export const useStore = create<AppState>((set, get) => ({
         assembliesByMark,
         instanceCounts: new Map(),
         ifcAssemblyParts: new Map(),
+        ifcPartIndex,
         loading: false,
         selection,
         trail: selection ? [selection] : [],
@@ -136,6 +230,17 @@ export const useStore = create<AppState>((set, get) => ({
       set({ loading: false, error: String(e) });
     }
   },
+
+  applyComponents: (components, dxf, index) =>
+    set((s) => {
+      if (!s.project) return s;
+      const merged = withComponents(s.project, components, dxf);
+      const ifcPartIndex = index ? new Map(index) : s.ifcPartIndex;
+      if (!merged) return { ifcPartIndex };
+      const partsByMark = new Map(s.partsByMark);
+      merged.parts.forEach((p) => partsByMark.set(p.mark.toLowerCase(), p));
+      return { project: merged, partsByMark, ifcPartIndex };
+    }),
 
   reload: async () => {
     const root = get().project?.root;

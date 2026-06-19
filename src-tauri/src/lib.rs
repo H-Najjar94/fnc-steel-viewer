@@ -9,8 +9,13 @@ fn cache_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("fnc-viewer").join("cache"))
 }
 
+// Bump when the index schema changes so stale caches are ignored (e.g. adding
+// DXF-derived plate parts means old caches lack them).
+const CACHE_VERSION: &str = "v4-dxfholes";
+
 fn cache_file(root: &str) -> Option<PathBuf> {
     let mut hasher = Sha256::new();
+    hasher.update(CACHE_VERSION.as_bytes());
     hasher.update(root.replace('\\', "/").to_lowercase().as_bytes());
     let hash = format!("{:x}", hasher.finalize());
     cache_dir().map(|d| d.join(format!("{}.json", &hash[..16])))

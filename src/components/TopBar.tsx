@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "../store";
 import { num, kg } from "../lib/format";
-import { PROJECTS } from "../config";
+import { getAllProjects } from "../config";
+import NewProjectModal from "./NewProjectModal";
 import logo from "../assets/fnc-logo.png";
 
 export default function TopBar() {
@@ -10,6 +11,8 @@ export default function TopBar() {
     useStore();
   const [fullscreen, setFullscreen] = useState(false);
   const [projMenu, setProjMenu] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const projects = getAllProjects();
 
   useEffect(() => {
     if (!projMenu) return;
@@ -67,8 +70,8 @@ export default function TopBar() {
           {project.ifc_path ? " · IFC ✓" : ""}
         </div>
         {projMenu && (
-          <div className="absolute left-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-md border border-fnc-border bg-fnc-panel py-1 shadow-xl">
-            {PROJECTS.map((p) => (
+          <div className="absolute left-0 top-full z-50 mt-1 w-60 overflow-hidden rounded-md border border-fnc-border bg-fnc-panel py-1 shadow-xl">
+            {projects.map((p) => (
               <button
                 key={p.root}
                 onClick={() => {
@@ -78,11 +81,23 @@ export default function TopBar() {
                 className={`block w-full px-3 py-2 text-left text-sm transition hover:bg-fnc-panel-2 ${
                   p.root === project.root ? "text-fnc-red" : "text-white"
                 }`}
+                title={p.root}
               >
                 {p.name}
+                {p.custom && <span className="ml-1 text-[10px] text-fnc-steel">(added)</span>}
                 {p.root === project.root && " ✓"}
               </button>
             ))}
+            <div className="my-1 border-t border-fnc-border" />
+            <button
+              onClick={() => {
+                setProjMenu(false);
+                setShowAdd(true);
+              }}
+              className="block w-full px-3 py-2 text-left text-sm font-medium text-fnc-red transition hover:bg-fnc-panel-2"
+            >
+              + Add new project…
+            </button>
           </div>
         )}
       </div>
@@ -132,6 +147,7 @@ export default function TopBar() {
           Close
         </button>
       </div>
+      {showAdd && <NewProjectModal onClose={() => setShowAdd(false)} />}
     </header>
   );
 }

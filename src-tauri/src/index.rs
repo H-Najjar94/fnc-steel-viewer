@@ -113,6 +113,224 @@ fn stem_lower(p: &Path) -> String {
         .unwrap_or_default()
 }
 
+#[derive(Default)]
+struct DxfPlateInfo {
+    thickness: Option<f64>,
+    thickness_group: Option<String>,
+    material: Option<String>,
+    length_mm: f64, // longer bbox side
+    width_mm: f64,  // shorter bbox side
+    weight_kg: f64,
+    holes: u32,
+}
+
+fn poly_area(pts: &[(f64, f64)]) -> f64 {
+    let mut a = 0.0;
+    for i in 0..pts.len() {
+        let j = (i + 1) % pts.len();
+        a += pts[i].0 * pts[j].1 - pts[j].0 * pts[i].1;
+    }
+    a.abs() / 2.0
+}
+
+fn point_in_poly(pt: (f64, f64), poly: &[(f64, f64)]) -> bool {
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if (yi > pt.1) != (yj > pt.1) && pt.0 < (xj - xi) * (pt.1 - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Parse a Tekla-style per-part DXF cut file for full plate specs: thickness +
+/// material (from a TEXT like "28+PL8+S235JR"), bounding-box length/width, hole
+/// count, and weight (net plate area x thickness x steel density). Mirrors the
+/// detail you'd get from a DSTV .nc1, computed from the cut geometry.
+fn dxf_plate_info(path: &Path) -> DxfPlateInfo {
+    let mut out = DxfPlateInfo::default();
+    let txt = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return out,
+    };
+
+    // --- thickness + material from annotation text ---
+    for tok in txt.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.')) {
+        if tok.len() < 2 {
+            continue;
+        }
+        let up = tok.to_uppercase();
+        if let Some(rest) = up.strip_prefix("PL") {
+            if out.thickness.is_none() && !rest.is_empty() {
+                if let Ok(v) = rest.parse::<f64>() {
+                    out.thickness = Some(v);
+                    out.thickness_group = Some(format!("PL{}", rest.trim_end_matches(".0")));
+                }
+            }
+        } else if out.material.is_none()
+            && up.starts_with('S')
+            && up.len() >= 4
+            && up.as_bytes()[1].is_ascii_digit()
+            && up.as_bytes()[2].is_ascii_digit()
+            && up.as_bytes()[3].is_ascii_digit()
+        {
+            out.material = Some(up);
+        }
+    }
+
+    // --- geometry: walk DXF group-code/value pairs ---
+    struct Loop {
+        layer: String,
+        pts: Vec<(f64, f64)>,
+    }
+    let mut loops: Vec<Loop> = Vec::new();
+    let mut circles: Vec<(f64, f64, f64)> = Vec::new();
+
+    let mut cur = String::new();
+    let mut layer = String::new();
+    let mut xs: Vec<f64> = Vec::new();
+    let mut ys: Vec<f64> = Vec::new();
+    let mut radius: Option<f64> = None;
+    let mut in_poly = false;
+    let mut poly_layer = String::new();
+    let mut poly_pts: Vec<(f64, f64)> = Vec::new();
+
+    let lines: Vec<&str> = txt.lines().collect();
+    let mut i = 0;
+    while i + 1 < lines.len() {
+        let code: i32 = lines[i].trim().parse().unwrap_or(i32::MIN);
+        let val = lines[i + 1].trim();
+        i += 2;
+        match code {
+            0 => {
+                // finalize the entity that just ended
+                match cur.as_str() {
+                    "LWPOLYLINE" => {
+                        if xs.len() >= 3 {
+                            let pts = xs.iter().cloned().zip(ys.iter().cloned()).collect();
+                            loops.push(Loop { layer: layer.clone(), pts });
+                        }
+                    }
+                    "POLYLINE" => {
+                        in_poly = true;
+                        poly_layer = layer.clone();
+                        poly_pts.clear();
+                    }
+                    "VERTEX" => {
+                        if in_poly && !xs.is_empty() && !ys.is_empty() {
+                            poly_pts.push((xs[0], ys[0]));
+                        }
+                    }
+                    "SEQEND" => {
+                        if in_poly {
+                            if poly_pts.len() >= 3 {
+                                loops.push(Loop {
+                                    layer: poly_layer.clone(),
+                                    pts: std::mem::take(&mut poly_pts),
+                                });
+                            }
+                            in_poly = false;
+                        }
+                    }
+                    "CIRCLE" => {
+                        if let Some(r) = radius {
+                            if r > 0.01 && !xs.is_empty() && !ys.is_empty() {
+                                circles.push((xs[0], ys[0], r));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                cur = val.to_string();
+                xs.clear();
+                ys.clear();
+                radius = None;
+                layer.clear();
+            }
+            8 => layer = val.to_string(),
+            10 => {
+                if let Ok(v) = val.parse() {
+                    xs.push(v);
+                }
+            }
+            20 => {
+                if let Ok(v) = val.parse() {
+                    ys.push(v);
+                }
+            }
+            40 => radius = val.parse().ok(),
+            _ => {}
+        }
+    }
+
+    // outer contour = largest closed loop, preferring layer CUT
+    let closed: Vec<&Loop> = loops.iter().filter(|l| l.pts.len() >= 3).collect();
+    if closed.is_empty() {
+        return out;
+    }
+    let cut: Vec<&&Loop> = closed.iter().filter(|l| l.layer.eq_ignore_ascii_case("CUT")).collect();
+    let pool: Vec<&Loop> = if cut.is_empty() {
+        closed.clone()
+    } else {
+        cut.iter().map(|l| **l).collect()
+    };
+    let outer = pool
+        .iter()
+        .max_by(|a, b| poly_area(&a.pts).partial_cmp(&poly_area(&b.pts)).unwrap())
+        .unwrap();
+
+    // bbox -> length / width
+    let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for &(x, y) in &outer.pts {
+        minx = minx.min(x);
+        miny = miny.min(y);
+        maxx = maxx.max(x);
+        maxy = maxy.max(y);
+    }
+    let w = maxx - minx;
+    let h = maxy - miny;
+    out.length_mm = w.max(h);
+    out.width_mm = w.min(h);
+
+    // net area = outer minus holes (circles + inner CUT loops inside the outer)
+    let mut net = poly_area(&outer.pts);
+    for &(cx, cy, r) in &circles {
+        if point_in_poly((cx, cy), &outer.pts) {
+            net -= std::f64::consts::PI * r * r;
+            out.holes += 1;
+        }
+    }
+    let outer_area = poly_area(&outer.pts);
+    for l in &closed {
+        if std::ptr::eq(*l, *outer) {
+            continue;
+        }
+        // Holes live on cut/hole layers (e.g. "CUT", "30"); skip annotations.
+        let up = l.layer.to_uppercase();
+        if up == "SCRIBE" || up == "TEXT" || up == "LAYOUT" {
+            continue;
+        }
+        let a = poly_area(&l.pts);
+        if a < outer_area * 0.98 {
+            let cx = l.pts.iter().map(|p| p.0).sum::<f64>() / l.pts.len() as f64;
+            let cy = l.pts.iter().map(|p| p.1).sum::<f64>() / l.pts.len() as f64;
+            if point_in_poly((cx, cy), &outer.pts) {
+                net -= a;
+                out.holes += 1;
+            }
+        }
+    }
+    if let Some(t) = out.thickness {
+        // steel density 7850 kg/m^3 = 7.85e-6 kg/mm^3
+        out.weight_kg = (net.max(0.0)) * t * 7.85e-6;
+    }
+    out
+}
+
 /// Mark used to match a single-part file: leading token before " - " or whitespace.
 fn mark_from_filename(stem: &str) -> String {
     let s = stem.trim();
@@ -254,7 +472,7 @@ pub fn scan(root: &str, excludes: &[String]) -> Result<ProjectIndex, String> {
     }
 
     // Parse all .nc1 in parallel.
-    let parts: Vec<Part> = nc1_files
+    let mut parts: Vec<Part> = nc1_files
         .par_iter()
         .filter_map(|p| {
             let content = std::fs::read_to_string(p).ok()?;
@@ -304,6 +522,63 @@ pub fn scan(root: &str, excludes: &[String]) -> Result<ProjectIndex, String> {
             })
         })
         .collect();
+
+    // For projects whose parts come as per-part DXF cut files (no DSTV .nc1,
+    // e.g. Tekla "DXF Files" exports), register each DXF as a plate part so the
+    // catalog + sidebar populate and the part's 3D can be extruded from the DXF
+    // outline — same instant experience as .nc1, no IFC and no extraction.
+    let mut existing: std::collections::HashSet<String> =
+        parts.iter().map(|p| p.mark.to_lowercase()).collect();
+    let dxf_parts: Vec<(String, Part)> = dxf_files
+        .par_iter()
+        .filter_map(|p| {
+            let stem = p
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let mark = mark_from_filename(&stem);
+            if mark.is_empty() {
+                return None;
+            }
+            let mark_lc = mark.to_lowercase();
+            let info = dxf_plate_info(p);
+            Some((
+                mark_lc.clone(),
+                Part {
+                    mark,
+                    name: "PLATE".to_string(),
+                    category: "Plate".to_string(),
+                    profile: info.thickness_group.clone().unwrap_or_else(|| "Plate".to_string()),
+                    profile_type: "plate".to_string(),
+                    material: info.material.unwrap_or_default(),
+                    length_mm: info.length_mm,
+                    width_mm: info.width_mm,
+                    height_mm: info.width_mm, // plate "Width" field reads height_mm
+                    flange_t_mm: info.thickness.unwrap_or(0.0),
+                    web_t_mm: 0.0,
+                    radius_mm: 0.0,
+                    weight_per_m: 0.0,
+                    weight_kg: info.weight_kg,
+                    quantity: 1,
+                    thickness_group: info.thickness_group,
+                    parent_assembly: String::new(),
+                    nc1_path: None,
+                    pdf_path: single_pdf_by_mark
+                        .get(&mark_lc)
+                        .or_else(|| any_pdf_by_mark.get(&mark_lc))
+                        .cloned(),
+                    dxf_path: Some(norm(p)),
+                },
+            ))
+        })
+        .collect();
+    // Keep only DXF parts whose mark isn't already a real (nc1) part — dedupe
+    // sequentially since the parse ran in parallel.
+    for (mark_lc, part) in dxf_parts {
+        if existing.insert(mark_lc) {
+            parts.push(part);
+        }
+    }
 
     // Link parts -> parent assemblies.
     for part in &parts {

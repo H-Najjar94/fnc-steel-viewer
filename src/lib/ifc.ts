@@ -55,6 +55,18 @@ export interface IfcModel {
   getAssemblyPartMarks: (mark: string) => Promise<AssemblyPartMarked[]>;
   /** Resolve a clicked element's part mark + parent assembly mark. */
   pick: (expressID: number) => Promise<{ partMark: string; assemblyMark: string }>;
+  /** One representative piece of a single part (by its mark), centered. Returns
+   *  null if no element in the IFC carries that part mark. Pass `knownIds` (from
+   *  a saved index) to skip the mark scan and build instantly. */
+  getPartGroup: (
+    partMark: string,
+    onProgress?: (done: number, total: number) => void,
+    knownIds?: number[]
+  ) => Promise<THREE.Group | null>;
+  /** mark(lc) -> expressIDs for every part. Persist this to skip the scan on reload. */
+  getPartIndex: (
+    onProgress?: (done: number, total: number) => void
+  ) => Promise<Map<string, number[]>>;
   /** Extract every unique component (plate/beam/column/member) with its mark.
    *  Heavy (reads marks for all part instances); cached after the first call. */
   getComponents: (onProgress?: (done: number, total: number) => void) => Promise<IfcComponent[]>;
@@ -401,18 +413,82 @@ async function build(path: string, onProgress?: (f: number) => void): Promise<If
     return { partMark, assemblyMark: partToAssembly.get(expressID) ?? "" };
   };
 
+  // partMark(lc) -> expressIDs carrying it. Built once (lazily or as a side
+  // effect of getComponents) and reused to isolate a single part in 3D.
+  let partIndex: Map<string, number[]> | null = null;
+  const partTypeIDs = (): number[] => {
+    const ids: number[] = [];
+    for (const t of [IFCBEAM, IFCPLATE, IFCCOLUMN, IFCMEMBER]) {
+      const v = api.GetLineIDsWithType(modelID, t);
+      for (let i = 0; i < v.size(); i++) ids.push(v.get(i));
+    }
+    return ids;
+  };
+  const ensurePartIndex = async (
+    onProgress?: (done: number, total: number) => void
+  ): Promise<Map<string, number[]>> => {
+    if (partIndex) return partIndex;
+    const idx = new Map<string, number[]>();
+    const ids = partTypeIDs();
+    for (let i = 0; i < ids.length; i++) {
+      const { partMark } = await readMarks(api, modelID, ids[i]);
+      if (partMark) {
+        const k = partMark.toLowerCase();
+        const arr = idx.get(k) ?? [];
+        arr.push(ids[i]);
+        idx.set(k, arr);
+      }
+      if (onProgress && i % 250 === 0) onProgress(i, ids.length);
+      if (i > 0 && i % 20 === 0) await yieldToBrowser();
+    }
+    onProgress?.(ids.length, ids.length);
+    partIndex = idx;
+    return idx;
+  };
+
+  // Build a centered group for the first of the given expressIDs — no scanning,
+  // used when the part's IDs are already known (e.g. from a saved index).
+  const buildGroupFromIds = (ids: number[] | undefined): THREE.Group | null => {
+    if (!ids?.length) return null;
+    const id = ids[0];
+    const b = new Map<Category, Bucket>();
+    try {
+      const cat = categoryOf(api.GetLineType(modelID, id));
+      const fm = api.GetFlatMesh(modelID, id);
+      addPlaced(api, modelID, fm.geometries, cat, id, b, m, nm, vp, vn);
+    } catch {
+      return null;
+    }
+    return orient(bucketsToGroup(b, true), upRotation);
+  };
+
+  // One representative piece of a single part, centered (geometry from the IFC).
+  // Pass `knownIds` (from a saved index) to skip the mark scan entirely.
+  const getPartGroup = async (
+    partMark: string,
+    onProgress?: (done: number, total: number) => void,
+    knownIds?: number[]
+  ): Promise<THREE.Group | null> => {
+    if (knownIds?.length) return buildGroupFromIds(knownIds);
+    const idx = await ensurePartIndex(onProgress);
+    return buildGroupFromIds(idx.get(partMark.toLowerCase()));
+  };
+
+  // The full part-mark index (mark(lc) -> expressIDs). Built lazily; cheap to
+  // persist so a reloaded project can show part 3D without re-scanning.
+  const getPartIndex = (
+    onProgress?: (done: number, total: number) => void
+  ): Promise<Map<string, number[]>> => ensurePartIndex(onProgress);
+
   // Extract every unique component (plate/beam/column/member) with its mark.
   let componentsCache: IfcComponent[] | null = null;
   const getComponents = async (
     onProgress?: (done: number, total: number) => void
   ): Promise<IfcComponent[]> => {
     if (componentsCache) return componentsCache;
-    const ids: number[] = [];
-    for (const t of [IFCBEAM, IFCPLATE, IFCCOLUMN, IFCMEMBER]) {
-      const v = api.GetLineIDsWithType(modelID, t);
-      for (let i = 0; i < v.size(); i++) ids.push(v.get(i));
-    }
+    const ids = partTypeIDs();
     const byMark = new Map<string, IfcComponent>();
+    const idx = new Map<string, number[]>(); // build the part index in the same pass
     let done = 0;
     const chunkSize = 20;
     for (let i = 0; i < ids.length; i++) {
@@ -428,6 +504,12 @@ async function build(path: string, onProgress?: (f: number) => void): Promise<If
         /* skip */
       }
       const { partMark } = await readMarks(api, modelID, id);
+      if (partMark) {
+        const k = partMark.toLowerCase();
+        const arr = idx.get(k) ?? [];
+        arr.push(id);
+        idx.set(k, arr);
+      }
       const key = partMark || `${category}|${profile}|${name}|#${id}`;
       const ex = byMark.get(key);
       if (ex) ex.count += 1;
@@ -448,6 +530,7 @@ async function build(path: string, onProgress?: (f: number) => void): Promise<If
       }
     }
     onProgress?.(ids.length, ids.length);
+    partIndex = idx;
     componentsCache = [...byMark.values()].sort(
       (a, b) =>
         CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category) ||
@@ -497,6 +580,8 @@ async function build(path: string, onProgress?: (f: number) => void): Promise<If
     getAssemblyHighlight,
     getAssemblyPartMarks,
     pick,
+    getPartGroup,
+    getPartIndex,
     getComponents,
   };
 }

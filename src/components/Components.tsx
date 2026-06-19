@@ -17,6 +17,8 @@ interface SavedDoc {
   savedAt: string;
   count: number;
   components: IfcComponent[];
+  dxf?: Record<string, string>; // mark(lc) -> dxf path, so links survive a reload
+  index?: Record<string, number[]>; // mark(lc) -> IFC expressIDs, so part 3D skips the scan
 }
 
 export default function Components() {
@@ -26,6 +28,7 @@ export default function Components() {
   const select = useStore((s) => s.select);
   const setMainView = useStore((s) => s.setMainView);
   const setViewerTab = useStore((s) => s.setViewerTab);
+  const applyComponents = useStore((s) => s.applyComponents);
 
   const [comps, setComps] = useState<IfcComponent[] | null>(null);
   const [pct, setPct] = useState(0);
@@ -101,18 +104,39 @@ export default function Components() {
   };
 
   const save = async () => {
-    if (!root || !comps) return;
+    if (!root || !ifcPath || !comps) return;
     setSaving(true);
     setError(null);
+    setPhase("Preparing 3D index");
     try {
       const stamp = new Date().toISOString();
-      const doc: SavedDoc = { savedAt: stamp, count: comps.length, components: comps };
-      await saveComponents(root, JSON.stringify(doc, null, 2));
+      // Capture the mark→DXF links so they persist with the save and survive reload.
+      const dxf: Record<string, string> = {};
+      for (const c of comps) {
+        const mk = c.mark?.toLowerCase();
+        const path = mk ? dxfMap.get(mk) : undefined;
+        if (mk && path) dxf[mk] = path;
+      }
+      // Build the part-mark → IFC geometry-ID index now and save it, so opening a
+      // part's 3D after reload is instant (no re-scan). Cheap if components were
+      // just extracted (already built in the same pass).
+      setPct(0);
+      const m = await loadIfcModel(ifcPath, (f) => setPct(Math.round(f * 100)));
+      const idxMap = await m.getPartIndex((d, t) => setPct(t ? Math.round((d / t) * 100) : 0));
+      const index: Record<string, number[]> = {};
+      idxMap.forEach((v, k) => (index[k] = v));
+
+      const doc: SavedDoc = { savedAt: stamp, count: comps.length, components: comps, dxf, index };
+      await saveComponents(root, JSON.stringify(doc));
+      // Fold into the live catalog now (sidebar counts, catalog list, assembly
+      // parts panel links, part 3D index) without needing a reload.
+      applyComponents(comps, dxf, idxMap);
       setSavedAt(stamp);
     } catch (e) {
       setError(String(e));
     } finally {
       setSaving(false);
+      setPhase("");
     }
   };
 
@@ -225,7 +249,7 @@ export default function Components() {
               className="rounded-md bg-fnc-red px-3 py-1.5 text-sm font-medium text-white transition hover:bg-fnc-red-dark disabled:opacity-50"
               title="Persist these components into the project and activate their links"
             >
-              {saving ? "Saving..." : savedAt ? "Saved - Save again" : "Save to project"}
+              {saving ? `Saving… ${pct}%` : savedAt ? "Saved ✓ — Save again" : "Save to project"}
             </button>
             <button
               onClick={load}

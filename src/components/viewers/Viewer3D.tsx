@@ -18,6 +18,8 @@ import { mm, kg } from "../../lib/format";
 import PanGesture from "./PanGesture";
 
 const IfcViewer = lazy(() => import("./IfcViewer"));
+const IfcPartViewer = lazy(() => import("./IfcPartViewer"));
+const DxfPartViewer = lazy(() => import("./DxfPartViewer"));
 
 export default function Viewer3D({
   part,
@@ -52,8 +54,27 @@ export default function Viewer3D({
     );
   }
 
-  if (!part?.nc1_path) return <Center>No CNC geometry for this item.</Center>;
-  return <PartScene part={part} />;
+  // DSTV reconstruction when the part has a CNC file.
+  if (part?.nc1_path) return <PartScene part={part} />;
+
+  // Per-part DXF cut file: extrude the outline — fast, no IFC, no extraction.
+  if (part?.dxf_path)
+    return (
+      <Suspense fallback={<Center>Loading 3D…</Center>}>
+        <DxfPartViewer part={part} />
+      </Suspense>
+    );
+
+  // Otherwise, if the project has an IFC, show this part isolated from the model
+  // (parts that exist only in the IFC — e.g. profiles with no DXF/.nc1).
+  if (part && ifcPath)
+    return (
+      <Suspense fallback={<Center>Loading 3D model…</Center>}>
+        <IfcPartViewer path={ifcPath} partMark={part.mark} name={part.name} profile={part.profile} />
+      </Suspense>
+    );
+
+  return <Center>No 3D geometry for this item.</Center>;
 }
 
 function PartScene({ part }: { part: Part }) {
@@ -75,6 +96,10 @@ function PartScene({ part }: { part: Part }) {
   }, [part.nc1_path]);
 
   const geometry = useMemo(() => (geo ? buildGeometry(geo) : null), [geo]);
+  const holeSize = useMemo(() => {
+    if (!geo) return 0.02;
+    return Math.max(Math.min(Math.max(geo.length_mm, geo.width_mm) * 0.000012, 0.08), 0.01);
+  }, [geo]);
 
   if (error) return <Center>{error}</Center>;
   if (!geometry) return <Center>Building 3D…</Center>;
@@ -98,15 +123,18 @@ function PartScene({ part }: { part: Part }) {
           <Lightformer intensity={0.8} position={[-5, 2, -4]} scale={[4, 4, 1]} />
         </Environment>
         <Bounds key={resetKey} fit clip observe margin={1.2}>
-          <mesh geometry={geometry}>
-            <meshStandardMaterial
-              color={part.category === "Plate" ? "#9aa7bd" : "#c0202a"}
-              metalness={0.1}
-              roughness={0.6}
-              wireframe={wire}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
+          <group>
+            <mesh geometry={geometry}>
+              <meshStandardMaterial
+                color={part.category === "Plate" ? "#9aa7bd" : "#c0202a"}
+                metalness={0.1}
+                roughness={0.6}
+                wireframe={wire}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+            {geo && geo.holes.length > 0 && <HoleMarkers geo={geo} size={holeSize} />}
+          </group>
         </Bounds>
         <Grid
           args={[10, 10]}
@@ -186,5 +214,25 @@ function Center({ children }: { children: React.ReactNode }) {
     <div className="flex h-full items-center justify-center p-6 text-sm text-fnc-steel">
       {children}
     </div>
+  );
+}
+
+function HoleMarkers({ geo, size }: { geo: PartGeometry; size: number }) {
+  const S = 0.001;
+  return (
+    <>
+      {geo.holes.map((h, i) => {
+        const x = (h.x - geo.width_mm / 2) * S;
+        const y = (geo.length_mm / 2 - h.y) * S;
+        const z = Math.max(geo.height_mm, 1) * S * 0.5 + size * 0.1;
+        const r = Math.max((h.d / 2) * S, size * 0.65);
+        return (
+          <mesh key={`${i}-${h.x}-${h.y}`} position={[x, y, z]} renderOrder={10}>
+            <circleGeometry args={[r, 20]} />
+            <meshBasicMaterial color="#d8dee8" depthWrite={false} depthTest />
+          </mesh>
+        );
+      })}
+    </>
   );
 }

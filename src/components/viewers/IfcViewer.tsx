@@ -80,6 +80,7 @@ export default function IfcViewer({ path, assemblyMark }: { path: string; assemb
   const [hoverGeom, setHoverGeom] = useState<THREE.BufferGeometry | null>(null);
   const hoverGeomRef = useRef<THREE.BufferGeometry | null>(null);
   const lastHoverID = useRef(0);
+  const lastAssemblyMark = useRef<string | undefined>(undefined);
   const setIfcData = useStore((s) => s.setIfcData);
   const selectByMark = useStore((s) => s.selectByMark);
   const select = useStore((s) => s.select);
@@ -193,6 +194,14 @@ export default function IfcViewer({ path, assemblyMark }: { path: string; assemb
     const s = new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3());
     return { footprint: Math.max(s.x, s.z, 1), height: Math.max(s.y, 1) };
   }, [model, mode, isoGroup]);
+
+  useEffect(() => {
+    if (!model || !assemblyMark || !canIsolate) return;
+    if (lastAssemblyMark.current === assemblyMark) return;
+    lastAssemblyMark.current = assemblyMark;
+    setMode("assembly");
+    setPickTarget("assembly");
+  }, [model, assemblyMark, canIsolate]);
 
   useEffect(() => {
     if (!model) return;

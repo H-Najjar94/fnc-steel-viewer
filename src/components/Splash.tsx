@@ -1,16 +1,14 @@
+import { useState } from "react";
 import { useStore } from "../store";
-import { pickFolder } from "../lib/api";
 import { basename } from "../lib/format";
-import { DEFAULT_PROJECT_ROOT, PROJECTS } from "../config";
+import { DEFAULT_PROJECT_ROOT, getAllProjects } from "../config";
+import NewProjectModal from "./NewProjectModal";
 import logo from "../assets/fnc-logo.png";
 
 export default function Splash() {
   const { loading, error, recents, openProject } = useStore();
-
-  async function choose() {
-    const folder = await pickFolder();
-    if (folder) openProject(folder);
-  }
+  const [showAdd, setShowAdd] = useState(false);
+  const projects = getAllProjects();
 
   // Auto-loading the default project: show a focused loading screen.
   if (loading) {
@@ -45,11 +43,11 @@ export default function Splash() {
         </p>
 
         <button
-          onClick={choose}
+          onClick={() => setShowAdd(true)}
           disabled={loading}
           className="mx-auto flex items-center gap-2 rounded-lg bg-fnc-red px-6 py-3 font-medium text-white transition hover:bg-fnc-red-dark disabled:opacity-50"
         >
-          {loading ? "Indexing project…" : "Open Project Folder"}
+          + Add new project
         </button>
 
         {error && (
@@ -64,7 +62,7 @@ export default function Splash() {
               Projects
             </div>
             <ul className="space-y-1">
-              {PROJECTS.map((p) => (
+              {projects.map((p) => (
                 <li key={p.root}>
                   <button
                     onClick={() => openProject(p.root)}
@@ -73,6 +71,7 @@ export default function Splash() {
                   >
                     <span className="inline-block h-2 w-2 rounded-full bg-fnc-red" />
                     {p.name}
+                    {p.custom && <span className="ml-1 text-[10px] text-fnc-steel">(added)</span>}
                   </button>
                 </li>
               ))}
@@ -105,6 +104,7 @@ export default function Splash() {
       <p className="mt-6 text-xs text-fnc-steel/60">
         Files are read locally and never leave this machine.
       </p>
+      {showAdd && <NewProjectModal onClose={() => setShowAdd(false)} />}
     </div>
   );
 }

@@ -46,6 +46,9 @@ function buildProfile(geo: PartGeometry): THREE.BufferGeometry {
     return new THREE.BoxGeometry(B, H, len);
   }
   const g = new THREE.ExtrudeGeometry(shape, { depth: len, bevelEnabled: false });
+  // Stand profile members upright in the viewer so long members read as
+  // columns/beams instead of lying flat on their side.
+  g.rotateX(-Math.PI / 2);
   return g;
 }
 
