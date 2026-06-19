@@ -59,6 +59,6 @@ A desktop app to read/interact with these files lives in a SIBLING folder:
   4 qty, 5 profile, 6 material, 7 height/width, 8 flange-width, 9 flange-t, 10 web-t,
   11 radius, 12 weight (kg/m for profiles, **kg/m² for plates**), then text:
   parent-assembly mark, part name.
-- Per-part 3D is reconstructed from NC1; full building 3D needs an IFC export
-  (web-ifc viewer is wired but no IFC exists in the project yet).
+- Per-part 3D is reconstructed from NC1; full building 3D uses IFC when available
+  (web-ifc viewer is wired, and Madar now has `MADAR GROUP.ifc`).
 - Dev check: `cd fnc-viewer/src-tauri && cargo run --example scan -- "<project>"`.
